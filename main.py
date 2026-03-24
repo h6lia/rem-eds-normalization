@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
+
 MAKE_PLOT = True
 
 
@@ -43,7 +44,6 @@ OXYGEN_NAMES = {
     "Oxygen", "oxygen",
     "Sauerstoff", "sauerstoff"
 }
-
 
 
 def find_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
@@ -93,17 +93,8 @@ def load_input_file(file_path: str) -> pd.DataFrame:
 
 def prepare_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     """
-    Unterstützt zwei Formate:
-
-    1. Langes Format:
-       Element | wt%
-
-    2. Breites Format:
-       Spectrum | Kohlenstoff | Sauerstoff | Natrium | ...
-
-    Rückgabe:
-    - DataFrame mit Spalten: Element, wt%
-    - Name der verwendeten wt%-Spalte bzw. Hinweis auf Wide-Format
+    Bereitet langes Format auf:
+    Element | wt%
     """
     df = df.copy()
     df.columns = [str(col).strip() for col in df.columns]
@@ -112,63 +103,20 @@ def prepare_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     raw_wt_col = find_column(df, RAW_WT_COLUMN_CANDIDATES)
     norm_wt_col = find_column(df, NORMALIZED_WT_COLUMN_CANDIDATES)
 
-    if element_col is not None:
-        if PREFER_NORMALIZED_INPUT:
-            wt_col = norm_wt_col if norm_wt_col is not None else raw_wt_col
-        else:
-            wt_col = raw_wt_col if raw_wt_col is not None else norm_wt_col
+    if element_col is None:
+        raise ValueError(f"Keine Element-Spalte gefunden. Gefundene Spalten: {list(df.columns)}")
 
-        if wt_col is None:
-            raise ValueError(
-                f"Keine passende wt%-Spalte gefunden. Gefundene Spalten: {list(df.columns)}"
-            )
+    if PREFER_NORMALIZED_INPUT:
+        wt_col = norm_wt_col if norm_wt_col is not None else raw_wt_col
+    else:
+        wt_col = raw_wt_col if raw_wt_col is not None else norm_wt_col
 
-        out = df[[element_col, wt_col]].copy()
-        out.columns = ["Element", "wt%"]
+    if wt_col is None:
+        raise ValueError(f"Keine passende wt%-Spalte gefunden. Gefundene Spalten: {list(df.columns)}")
 
-        out["wt%"] = (
-            out["wt%"]
-            .astype(str)
-            .str.replace(",", ".", regex=False)
-            .str.replace("%", "", regex=False)
-            .str.strip()
-        )
-        out["wt%"] = pd.to_numeric(out["wt%"], errors="coerce")
+    out = df[[element_col, wt_col]].copy()
+    out.columns = ["Element", "wt%"]
 
-        out["Element"] = out["Element"].where(pd.notna(out["Element"]), None)
-        out = out[out["Element"].notna()]
-        out["Element"] = out["Element"].astype(str).str.strip()
-        out = out.dropna(subset=["wt%"])
-
-        bad_element_names = {"", "nan", "none", "summe", "sum", "gesamt", "total", "subtotal"}
-        out = out[~out["Element"].str.lower().isin(bad_element_names)]
-        out = out[~out["Element"].str.contains("unnamed", case=False, na=False)]
-
-        return out.reset_index(drop=True), wt_col
-
-
-    if len(df) == 0:
-        raise ValueError("Die Datei enthält keine Daten.")
-
-
-    ignore_cols = {
-        "spectrum", "spec", "messpunkt", "punkt", "sample", "probe", "id"
-    }
-
-    value_columns = [col for col in df.columns if str(col).strip().lower() not in ignore_cols]
-
-    if not value_columns:
-        raise ValueError(
-            f"Keine auswertbaren Element-Spalten gefunden. Gefundene Spalten: {list(df.columns)}"
-        )
-
-
-    first_row = df.iloc[0]
-
-    out = pd.DataFrame({
-        "Element": value_columns,
-        "wt%": [first_row[col] for col in value_columns]
-    })
 
     out["wt%"] = (
         out["wt%"]
@@ -179,20 +127,20 @@ def prepare_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     )
     out["wt%"] = pd.to_numeric(out["wt%"], errors="coerce")
 
+
+    out["Element"] = out["Element"].where(pd.notna(out["Element"]), None)
+    out = out[out["Element"].notna()]
     out["Element"] = out["Element"].astype(str).str.strip()
+
+
     out = out.dropna(subset=["wt%"])
+
 
     bad_element_names = {"", "nan", "none", "summe", "sum", "gesamt", "total", "subtotal"}
     out = out[~out["Element"].str.lower().isin(bad_element_names)]
     out = out[~out["Element"].str.contains("unnamed", case=False, na=False)]
 
-    if out.empty:
-        raise ValueError(
-            f"Wide-Format erkannt, aber keine numerischen Elementwerte gefunden. "
-            f"Gefundene Spalten: {list(df.columns)}"
-        )
-
-    return out.reset_index(drop=True), "Wide-format first row"
+    return out.reset_index(drop=True), wt_col
 
 
 def normalize_without_oxygen(df: pd.DataFrame) -> tuple[pd.DataFrame, float, float]:
@@ -225,8 +173,10 @@ def normalize_without_oxygen(df: pd.DataFrame) -> tuple[pd.DataFrame, float, flo
     work_df["Original_wt%"] = work_df["wt%"]
     work_df["Normiert_ohne_O_wt%"] = (work_df["Original_wt%"] / sum_basis) * 100.0
 
+
     work_df["Original_wt%"] = work_df["Original_wt%"].round(4)
     work_df["Normiert_ohne_O_wt%"] = work_df["Normiert_ohne_O_wt%"].round(4)
+
 
     rounded_sum = round(work_df["Normiert_ohne_O_wt%"].sum(), 4)
     correction = round(100.0 - rounded_sum, 4)
@@ -251,6 +201,89 @@ def normalize_without_oxygen(df: pd.DataFrame) -> tuple[pd.DataFrame, float, flo
 
     return result, oxygen_value, sum_basis
 
+
+def process_wide_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Verarbeitet breite Tabellen mit mehreren Spektren / Messpunkten.
+
+    Eingabe-Beispiel:
+    Spectrum | Kohlenstoff | Sauerstoff | Natrium | Magnesium | ...
+
+    Ausgabe:
+    Eine breite Ergebnistabelle mit einer Zeile pro Spectrum und
+    normierten O-freien Elementwerten als Spalten.
+
+    Beispiel:
+    Spectrum | Kohlenstoff | Magnesium | Aluminium | Silizium | ...
+    """
+    df = df.copy()
+    df.columns = [str(col).strip() for col in df.columns]
+
+    ignore_cols = {
+        "spectrum", "spec", "messpunkt", "punkt", "sample", "probe", "id"
+    }
+
+    spectrum_col = None
+    for col in df.columns:
+        if str(col).strip().lower() in ignore_cols:
+            spectrum_col = col
+            break
+
+    element_cols = [col for col in df.columns if col != spectrum_col]
+
+    if not element_cols:
+        raise ValueError("Keine Elementspalten gefunden.")
+
+    all_rows = []
+
+    for idx, row in df.iterrows():
+        spectrum_name = row[spectrum_col] if spectrum_col is not None else f"Zeile_{idx+1}"
+
+        temp_df = pd.DataFrame({
+            "Element": element_cols,
+            "wt%": [row[col] for col in element_cols]
+        })
+
+        temp_df["wt%"] = (
+            temp_df["wt%"]
+            .astype(str)
+            .str.replace(",", ".", regex=False)
+            .str.replace("%", "", regex=False)
+            .str.strip()
+        )
+        temp_df["wt%"] = pd.to_numeric(temp_df["wt%"], errors="coerce")
+
+        temp_df["Element"] = temp_df["Element"].astype(str).str.strip()
+        temp_df = temp_df.dropna(subset=["wt%"])
+
+        bad_element_names = {"", "nan", "none", "summe", "sum", "gesamt", "total", "subtotal"}
+        temp_df = temp_df[~temp_df["Element"].str.lower().isin(bad_element_names)]
+        temp_df = temp_df[~temp_df["Element"].str.contains("unnamed", case=False, na=False)]
+
+        if temp_df.empty:
+            continue
+
+        result_df, oxygen_value, sum_basis = normalize_without_oxygen(temp_df)
+
+        row_dict = {"Spectrum": spectrum_name}
+        for _, r in result_df.iterrows():
+            row_dict[r["Element"]] = r["Normiert_ohne_O_wt%"]
+
+        all_rows.append(row_dict)
+
+    if not all_rows:
+        raise ValueError("Keine gültigen Spektren im Wide-Format gefunden.")
+
+    result_wide = pd.DataFrame(all_rows)
+
+    cols = list(result_wide.columns)
+    if "Spectrum" in cols:
+        cols.remove("Spectrum")
+        result_wide = result_wide[["Spectrum"] + cols]
+
+    result_wide = result_wide.fillna(0)
+
+    return result_wide
 
 def save_output_csv(df: pd.DataFrame, input_path: str) -> str:
     base = os.path.splitext(input_path)[0]
@@ -277,7 +310,7 @@ def make_plot(df: pd.DataFrame, input_path: str) -> str:
 
 
 def main():
-    print("REM/EDS-Auswertung: Elemente ohne Sauerstoff korrekt normieren")
+    print("REM/EDS-Auswertung: mehrere Punkte korrekt verarbeiten")
     file_path = input("Pfad zur CSV- oder Excel-Datei eingeben: ").strip().strip('"')
 
     if not os.path.exists(file_path):
@@ -286,23 +319,42 @@ def main():
 
     try:
         raw_df = load_input_file(file_path)
-        prepared_df, used_col = prepare_dataframe(raw_df)
+        raw_df.columns = [str(col).strip() for col in raw_df.columns]
 
-        print(f"\nVerwendete wt%-Spalte: {used_col}")
-        print("\nEingelesene Daten:")
-        print(prepared_df)
 
-        result_df, oxygen_value, sum_basis = normalize_without_oxygen(prepared_df)
+        element_col = find_column(raw_df, ELEMENT_COLUMN_CANDIDATES)
+        raw_wt_col = find_column(raw_df, RAW_WT_COLUMN_CANDIDATES)
+        norm_wt_col = find_column(raw_df, NORMALIZED_WT_COLUMN_CANDIDATES)
 
-        print("\nErgebnis:")
-        print(result_df)
+        if element_col is not None and (raw_wt_col is not None or norm_wt_col is not None):
+            prepared_df, used_col = prepare_dataframe(raw_df)
 
-        output_csv = save_output_csv(result_df, file_path)
-        print(f"\nCSV gespeichert unter:\n{output_csv}")
+            print(f"\nVerwendete wt%-Spalte: {used_col}")
 
-        if MAKE_PLOT:
-            plot_path = make_plot(result_df, file_path)
-            print(f"\nDiagramm gespeichert unter:\n{plot_path}")
+            result_df, oxygen_value, sum_basis = normalize_without_oxygen(prepared_df)
+
+            print("\nErgebnis:")
+            print(result_df)
+
+            output_csv = save_output_csv(result_df, file_path)
+            print(f"\nCSV gespeichert unter:\n{output_csv}")
+
+            if MAKE_PLOT:
+                plot_path = make_plot(result_df, file_path)
+                print(f"\nDiagramm gespeichert unter:\n{plot_path}")
+
+        else:
+            print("\nWide-Format erkannt: mehrere Spektren / Punkte werden zeilenweise verarbeitet.")
+
+            result_df = process_wide_dataframe(raw_df)
+
+            print("\nErgebnis:")
+            print(result_df)
+
+            base = os.path.splitext(file_path)[0]
+            output_csv = base + "_alle_spektren_normiert_ohne_O.csv"
+            result_df.to_csv(output_csv, index=False, sep=";", decimal=",", encoding="utf-8-sig")
+            print(f"\nCSV gespeichert unter:\n{output_csv}")
 
     except Exception as exc:
         print(f"\nFehler: {exc}")
