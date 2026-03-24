@@ -2,13 +2,10 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# ============================================================
-# EINSTELLUNGEN
-# ============================================================
 
 MAKE_PLOT = True
 
-# Bevorzugt diese Spalte:
+
 PREFER_NORMALIZED_INPUT = True
 
 ELEMENT_COLUMN_CANDIDATES = [
@@ -48,9 +45,6 @@ OXYGEN_NAMES = {
 }
 
 
-# ============================================================
-# HILFSFUNKTIONEN
-# ============================================================
 
 def find_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
     normalized = {str(col).strip().lower(): col for col in df.columns}
@@ -124,7 +118,7 @@ def prepare_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     out = df[[element_col, wt_col]].copy()
     out.columns = ["Element", "wt%"]
 
-    # wt%-Spalte zuerst numerisch machen
+
     out["wt%"] = (
         out["wt%"]
         .astype(str)
@@ -134,28 +128,21 @@ def prepare_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     )
     out["wt%"] = pd.to_numeric(out["wt%"], errors="coerce")
 
-    # Element-Spalte NICHT sofort zu str machen,
-    # damit echte NaN-Zeilen sicher entfernt werden können
+
     out["Element"] = out["Element"].where(pd.notna(out["Element"]), None)
 
-    # Zeilen ohne Elementnamen entfernen
     out = out[out["Element"].notna()]
 
-    # Jetzt erst als String behandeln
     out["Element"] = out["Element"].astype(str).str.strip()
 
-    # wt%-NaN entfernen
     out = out.dropna(subset=["wt%"])
 
-    # Leere oder künstliche Summenzeilen entfernen
     bad_element_names = {
         "", "nan", "none", "summe", "sum", "gesamt", "total", "subtotal"
     }
     out = out[~out["Element"].str.lower().isin(bad_element_names)]
     out = out[~out["Element"].str.contains("unnamed", case=False, na=False)]
 
-    # Sicherheitsfilter:
-    # Zeilen mit wt%=100 und ohne echtes Element sollen nie mitlaufen
     out = out[~((out["wt%"] >= 99.999) & (out["Element"].str.lower().isin({"nan", "none", ""})))]
 
     out = out.reset_index(drop=True)
@@ -197,11 +184,9 @@ def normalize_without_oxygen(df: pd.DataFrame) -> tuple[pd.DataFrame, float, flo
     work_df["Original_wt%"] = work_df["wt%"]
     work_df["Normiert_ohne_O_wt%"] = (work_df["Original_wt%"] / sum_basis) * 100.0
 
-    # Rundung erst am Ende
     work_df["Original_wt%"] = work_df["Original_wt%"].round(4)
     work_df["Normiert_ohne_O_wt%"] = work_df["Normiert_ohne_O_wt%"].round(4)
 
-    # Optionale Korrektur auf exakt 100.0000
     rounded_sum = round(work_df["Normiert_ohne_O_wt%"].sum(), 4)
     correction = round(100.0 - rounded_sum, 4)
 
