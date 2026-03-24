@@ -14,7 +14,7 @@ Python tool for geochemical processing of REM/EDS data.
 - pandas
 - matplotlib
 
-Note: Developed with AI-assisted coding. Outputs should be critically reviewed before use in scientific interpretation.
+Note: Outputs should be critically reviewed before use in scientific interpretation.
 
 Run
 ```bash
