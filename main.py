@@ -93,9 +93,17 @@ def load_input_file(file_path: str) -> pd.DataFrame:
 
 def prepare_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     """
-    Bereitet die Datei so auf, dass am Ende nur noch:
-    Element | wt%
-    übrig bleibt.
+    Unterstützt zwei Formate:
+
+    1. Langes Format:
+       Element | wt%
+
+    2. Breites Format:
+       Spectrum | Kohlenstoff | Sauerstoff | Natrium | ...
+
+    Rückgabe:
+    - DataFrame mit Spalten: Element, wt%
+    - Name der verwendeten wt%-Spalte bzw. Hinweis auf Wide-Format
     """
     df = df.copy()
     df.columns = [str(col).strip() for col in df.columns]
@@ -104,20 +112,63 @@ def prepare_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     raw_wt_col = find_column(df, RAW_WT_COLUMN_CANDIDATES)
     norm_wt_col = find_column(df, NORMALIZED_WT_COLUMN_CANDIDATES)
 
-    if element_col is None:
-        raise ValueError(f"Keine Element-Spalte gefunden. Gefundene Spalten: {list(df.columns)}")
+    if element_col is not None:
+        if PREFER_NORMALIZED_INPUT:
+            wt_col = norm_wt_col if norm_wt_col is not None else raw_wt_col
+        else:
+            wt_col = raw_wt_col if raw_wt_col is not None else norm_wt_col
 
-    if PREFER_NORMALIZED_INPUT:
-        wt_col = norm_wt_col if norm_wt_col is not None else raw_wt_col
-    else:
-        wt_col = raw_wt_col if raw_wt_col is not None else norm_wt_col
+        if wt_col is None:
+            raise ValueError(
+                f"Keine passende wt%-Spalte gefunden. Gefundene Spalten: {list(df.columns)}"
+            )
 
-    if wt_col is None:
-        raise ValueError(f"Keine wt%-Spalte gefunden. Gefundene Spalten: {list(df.columns)}")
+        out = df[[element_col, wt_col]].copy()
+        out.columns = ["Element", "wt%"]
 
-    out = df[[element_col, wt_col]].copy()
-    out.columns = ["Element", "wt%"]
+        out["wt%"] = (
+            out["wt%"]
+            .astype(str)
+            .str.replace(",", ".", regex=False)
+            .str.replace("%", "", regex=False)
+            .str.strip()
+        )
+        out["wt%"] = pd.to_numeric(out["wt%"], errors="coerce")
 
+        out["Element"] = out["Element"].where(pd.notna(out["Element"]), None)
+        out = out[out["Element"].notna()]
+        out["Element"] = out["Element"].astype(str).str.strip()
+        out = out.dropna(subset=["wt%"])
+
+        bad_element_names = {"", "nan", "none", "summe", "sum", "gesamt", "total", "subtotal"}
+        out = out[~out["Element"].str.lower().isin(bad_element_names)]
+        out = out[~out["Element"].str.contains("unnamed", case=False, na=False)]
+
+        return out.reset_index(drop=True), wt_col
+
+
+    if len(df) == 0:
+        raise ValueError("Die Datei enthält keine Daten.")
+
+
+    ignore_cols = {
+        "spectrum", "spec", "messpunkt", "punkt", "sample", "probe", "id"
+    }
+
+    value_columns = [col for col in df.columns if str(col).strip().lower() not in ignore_cols]
+
+    if not value_columns:
+        raise ValueError(
+            f"Keine auswertbaren Element-Spalten gefunden. Gefundene Spalten: {list(df.columns)}"
+        )
+
+
+    first_row = df.iloc[0]
+
+    out = pd.DataFrame({
+        "Element": value_columns,
+        "wt%": [first_row[col] for col in value_columns]
+    })
 
     out["wt%"] = (
         out["wt%"]
@@ -128,30 +179,20 @@ def prepare_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     )
     out["wt%"] = pd.to_numeric(out["wt%"], errors="coerce")
 
-
-    out["Element"] = out["Element"].where(pd.notna(out["Element"]), None)
-
-    out = out[out["Element"].notna()]
-
     out["Element"] = out["Element"].astype(str).str.strip()
-
     out = out.dropna(subset=["wt%"])
 
-    bad_element_names = {
-        "", "nan", "none", "summe", "sum", "gesamt", "total", "subtotal"
-    }
+    bad_element_names = {"", "nan", "none", "summe", "sum", "gesamt", "total", "subtotal"}
     out = out[~out["Element"].str.lower().isin(bad_element_names)]
     out = out[~out["Element"].str.contains("unnamed", case=False, na=False)]
 
-    out = out[~((out["wt%"] >= 99.999) & (out["Element"].str.lower().isin({"nan", "none", ""})))]
+    if out.empty:
+        raise ValueError(
+            f"Wide-Format erkannt, aber keine numerischen Elementwerte gefunden. "
+            f"Gefundene Spalten: {list(df.columns)}"
+        )
 
-    out = out.reset_index(drop=True)
-
-    print("\nBereinigte Eingabedaten:")
-    print(out)
-    print(f"Summe der verwendeten wt%: {out['wt%'].sum():.6f}")
-
-    return out.reset_index(drop=True), wt_col
+    return out.reset_index(drop=True), "Wide-format first row"
 
 
 def normalize_without_oxygen(df: pd.DataFrame) -> tuple[pd.DataFrame, float, float]:
